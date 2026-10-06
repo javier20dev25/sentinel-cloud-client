@@ -29,7 +29,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/sentinel-security/cloud-client.git"
+    "url": "https://github.com/javier20dev25/sentinel-cloud-client.git"
   },
   "dependencies": {},
   "devDependencies": {
