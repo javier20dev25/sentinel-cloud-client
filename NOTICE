@@ -1,0 +1,18 @@
+Sentinel Cloud Client
+Copyright 2026 Javier Astaroth
+
+This product includes software originally developed as part of Sentinel CLI and
+published under the Business Source License 1.1. It has been relicensed to the
+Apache License, Version 2.0 by the copyright holder, who is the sole author of
+the original work and sole holder of copyright in it.
+
+The Business Source License name is a trademark of MariaDB Corporation Ab and is
+not used here. The Apache License, Version 2.0 governs this package and supersedes
+the license under which the work was previously distributed.
+
+Scope of the relicensing: src/index.ts only. Files that imported the proprietary
+scanning engine at runtime, and the type declaration chain that reached it, were
+deliberately excluded from this package and are not relicensed.
+
+Third-party code: none. This package has no runtime dependency outside the Node.js
+standard library.
