@@ -1,6 +1,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 
 /**
  * Closed enum of dependency signals accepted by the contribution endpoint.
@@ -440,20 +441,28 @@ export async function fetchRemoteScan(
     format: string,
     token: string,
     baseUrl: string,
-    opts?: { timeoutMs?: number }
+    opts?: { timeoutMs?: number; idempotencyKey?: string; groupCredentials?: { groupKey: string; memberKey: string; repositoryId: string } }
 ): Promise<RemoteScanFetchResult> {
     const url = baseUrl.replace(/\/+$/, '') + '/api/scan/remote';
     const timeoutMs = opts?.timeoutMs ?? REMOTE_SCAN_TIMEOUT_MS;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'Idempotency-Key': opts?.idempotencyKey ?? randomUUID(),
+        };
+        if (opts?.groupCredentials) {
+            headers['x-sentinel-group-key'] = opts.groupCredentials.groupKey;
+            headers['x-sentinel-member-key'] = opts.groupCredentials.memberKey;
+            headers['x-sentinel-repository-id'] = opts.groupCredentials.repositoryId;
+        } else {
+            headers.Authorization = `Bearer ${token}`;
+        }
         const res = await fetch(url, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
-            },
+            headers,
             body: JSON.stringify({ manifest, format }),
             signal: controller.signal,
         });
@@ -1122,9 +1131,24 @@ export type RepositoryScanCallResult<T> = { ok: true; data: T } | RepositoryScan
 
 export interface RepositoryScanRequestOptions {
     timeoutMs?: number;
+    /** Group scoped credentials; each credential identifies one side of a member operation. */
+    groupCredentials?: { groupKey: string; memberKey: string; repositoryId: string };
+}
+
+function repositoryScanAuthHeaders(token: string, opts?: RepositoryScanRequestOptions): Record<string, string> {
+    const group = opts?.groupCredentials;
+    if (group) return {
+        'x-sentinel-group-key': group.groupKey,
+        'x-sentinel-member-key': group.memberKey,
+        'x-sentinel-repository-id': group.repositoryId,
+        Accept: 'application/json',
+    };
+    return { Authorization: `Bearer ${token}`, Accept: 'application/json' };
 }
 
 export interface SubmitRepositoryScanOptions extends RepositoryScanRequestOptions {
+    /** Stable across retries of the same submission; generated when omitted. */
+    idempotencyKey?: string;
     /** Sent as x-sentinel-repo-label; trimmed and capped at 255 characters. */
     repoLabel?: string;
     /** Sent as x-sentinel-commit-sha; must be 7-64 hex characters or it is dropped. */
@@ -1418,8 +1442,13 @@ export async function submitRepositoryScan(
     baseUrl: string,
     opts?: SubmitRepositoryScanOptions
 ): Promise<RepositoryScanCallResult<RepositoryScanSubmission>> {
-    if (!isString(token) || token.length === 0) {
+    const groupCredentials = opts?.groupCredentials;
+    const hasGroupCredentials = !!groupCredentials;
+    if ((!isString(token) || token.length === 0) && !hasGroupCredentials) {
         return fail('UNAUTHORIZED', '', { error: 'An API token is required.' });
+    }
+    if (hasGroupCredentials && (!/^scgrp_[A-Za-z0-9_-]{32,64}$/.test(groupCredentials.groupKey) || !/^scmem_[A-Za-z0-9_-]{32,64}$/.test(groupCredentials.memberKey) || !/^[0-9a-f-]{36}$/i.test(groupCredentials.repositoryId))) {
+        return fail('INVALID_REQUEST', token, { error: 'Valid group and member credentials plus a repository UUID are required.' });
     }
     const bytes = toBytes(archive);
     if (!bytes) {
@@ -1441,9 +1470,9 @@ export async function submitRepositoryScan(
 
     const url = resolveRepositoryScanUrl(baseUrl, '/api/scan/repository');
     const headers: Record<string, string> = {
-        Authorization: `Bearer ${token}`,
+        ...repositoryScanAuthHeaders(token, opts),
         'Content-Type': opts?.contentType ?? REPOSITORY_SCAN_CONTENT_TYPE,
-        Accept: 'application/json',
+        'Idempotency-Key': opts?.idempotencyKey ?? randomUUID(),
     };
     if (opts?.repoLabel) {
         headers['x-sentinel-repo-label'] = opts.repoLabel.trim().slice(0, REPOSITORY_SCAN_MAX_LABEL_LENGTH);
@@ -1493,7 +1522,7 @@ export async function getRepositoryScan(
     baseUrl: string,
     opts?: RepositoryScanRequestOptions
 ): Promise<RepositoryScanCallResult<RepositoryScanSummary>> {
-    if (!isString(token) || token.length === 0) {
+    if ((!isString(token) || token.length === 0) && !opts?.groupCredentials) {
         return fail('UNAUTHORIZED', '', { error: 'An API token is required.' });
     }
     if (!isSafeScanId(scanId)) {
@@ -1506,7 +1535,7 @@ export async function getRepositoryScan(
     const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? REPOSITORY_SCAN_STATUS_TIMEOUT_MS);
     try {
         const res = await fetch(url, {
-            headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+            headers: repositoryScanAuthHeaders(token, opts),
             signal: controller.signal,
         });
         if (!res.ok) return await classifyResponse(res, token);
@@ -1535,7 +1564,7 @@ export async function getRepositoryScanResult(
     baseUrl: string,
     opts?: RepositoryScanRequestOptions
 ): Promise<RepositoryScanCallResult<RepositoryScanEnvelope>> {
-    if (!isString(token) || token.length === 0) {
+    if ((!isString(token) || token.length === 0) && !opts?.groupCredentials) {
         return fail('UNAUTHORIZED', '', { error: 'An API token is required.' });
     }
     if (!isSafeScanId(scanId)) {
@@ -1551,7 +1580,7 @@ export async function getRepositoryScanResult(
     const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? REPOSITORY_SCAN_RESULT_TIMEOUT_MS);
     try {
         const res = await fetch(url, {
-            headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+            headers: repositoryScanAuthHeaders(token, opts),
             signal: controller.signal,
         });
         if (!res.ok) return await classifyResponse(res, token);
